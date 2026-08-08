@@ -5,12 +5,10 @@ import torch
 import gc
 import asyncio
 import numpy as np
-import re
 from faster_whisper import WhisperModel
 import edge_tts
 from groq import Groq
 from openai import OpenAI
-from audio_recorder_streamlit import audio_recorder  # pip install streamlit-audio-recorder
 
 # ============================================================
 # PAGE CONFIG
@@ -73,7 +71,7 @@ AVAILABLE_MODELS = {
 }
 
 # ============================================================
-# 🎙️ FAST-WHISPER (GPU/CPU auto-detect)
+# 🎙️ FAST-WHISPER (GPU/CPU auto-detect) – cached
 # ============================================================
 @st.cache_resource
 def load_whisper_model():
@@ -102,19 +100,28 @@ def cleanup_memory():
 # ============================================================
 # 🗣️ TRANSCRIPTION
 # ============================================================
-def transcribe_audio(audio_file, input_lang_name):
-    if audio_file is None:
+def transcribe_audio(audio_bytes, input_lang_name):
+    if audio_bytes is None:
         return None
     try:
+        # Save audio bytes to a temporary file (Whisper expects a file path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
         lang_code = LANGUAGE_CODES.get(input_lang_name, "en")
         segments, _ = whisper_model.transcribe(
-            audio_file,
+            tmp_path,
             beam_size=1,
             vad_filter=True,
             language=lang_code,
             task="transcribe"
         )
         text = " ".join(seg.text for seg in segments).strip()
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
         return text if text else None
     except Exception as e:
         st.error(f"Transcription error: {e}")
@@ -146,7 +153,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         )
         translation = response.choices[0].message.content.strip()
 
-        # TTS
+        # TTS (edge-tts)
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
         voice_map = {
             "en": "en-US-JennyNeural",
@@ -176,7 +183,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
             communicate = edge_tts.Communicate(translation, voice)
             await communicate.save(output_file.name)
 
-        asyncio.run(tss_task())
+        asyncio.run(tts_task())
 
         return translation, output_file.name
 
@@ -189,15 +196,22 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
 # ============================================================
 # 🖥️ STREAMLIT UI
 # ============================================================
-# Sidebar – selections
+st.title("🎙️ Real‑Time Conversation Translator")
+st.markdown("Select languages, record or upload audio, then translate and hear the reply.")
+
+# Sidebar – settings
 with st.sidebar:
     st.header("🌍 Settings")
     input_lang = st.selectbox("Input Language", SUPPORTED_LANGUAGES, index=0)
     reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES, index=SUPPORTED_LANGUAGES.index("Malaysian Malay"))
     model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)  # Llama-3.1 instant 8B
 
-# Main area – columns
-col1, col2 = st.columns([1, 1])
+    if st.button("Clear History", use_container_width=True):
+        st.session_state.history = []
+        st.session_state.reply_text = ""
+        st.session_state.reply_audio = None
+        st.session_state.transcribed_text = ""
+        st.rerun()
 
 # Session state initialisation
 if "history" not in st.session_state:
@@ -208,43 +222,38 @@ if "reply_text" not in st.session_state:
     st.session_state.reply_text = ""
 if "reply_audio" not in st.session_state:
     st.session_state.reply_audio = None
-if "uploaded_audio" not in st.session_state:
-    st.session_state.uploaded_audio = None
+
+# Main area – columns
+col_left, col_right = st.columns([1, 1])
 
 # ---- Left column: Audio input and transcription ----
-with col1:
+with col_left:
     st.subheader("🎤 Speak or Upload Audio")
 
-    # Option: use file uploader
-    uploaded_file = st.file_uploader("Upload audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
-    # Option: use audio recorder (streamlit-audio-recorder)
-    audio_bytes = audio_recorder(pause_threshold=2.0, text="Click to record", recording_color="#e8b62c", neutral_color="#6aa36f")
+    # Option 1: Record via browser (Streamlit built‑in)
+    audio_data = st.audio_input("Record from microphone")
+    # Option 2: Upload a file
+    uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # If we have a new audio source, transcribe
-    audio_to_process = None
-    if uploaded_file is not None:
-        # Save uploaded file to temp
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(uploaded_file.read())
-            audio_to_process = tmp.name
-            st.session_state.uploaded_audio = audio_to_process  # store for later processing
-    elif audio_bytes is not None:
-        # Save recorded audio to temp
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(audio_bytes)
-            audio_to_process = tmp.name
-            st.session_state.uploaded_audio = audio_to_process
+    # Determine which audio to process
+    audio_bytes = None
+    if audio_data is not None:
+        audio_bytes = audio_data.getvalue()
+    elif uploaded_file is not None:
+        audio_bytes = uploaded_file.read()
 
-    # If we have audio, transcribe automatically
-    if audio_to_process:
+    # If we have new audio, transcribe automatically
+    if audio_bytes:
         with st.spinner("Transcribing..."):
-            text = transcribe_audio(audio_to_process, input_lang)
+            text = transcribe_audio(audio_bytes, input_lang)
             if text:
                 st.session_state.transcribed_text = text
                 st.success("Transcription complete. Edit below if needed.")
             else:
                 st.error("No speech detected. Please try again.")
-        # Clean up temp file after processing? We'll keep for now, but can delete later
+        # Clear the audio input to avoid re‑processing on rerun?
+        # We can't clear st.audio_input directly, but we can set a flag.
+        # For simplicity, we won't clear; it's fine if it stays.
 
     # Editable transcription
     st.subheader("📝 Transcription (Edit if needed)")
@@ -263,29 +272,22 @@ with col1:
                     model_choice
                 )
                 if reply_text and audio_file:
-                    # Update session state
                     st.session_state.reply_text = reply_text
                     st.session_state.reply_audio = audio_file
-                    # Update history
                     st.session_state.history.append({"role": "user", "content": f"{input_lang}: {transcribed_edit}"})
                     st.session_state.history.append({"role": "assistant", "content": f"{reply_lang}: {reply_text}"})
-                    # Clear transcription after successful reply? No, keep for editing.
-                    # For now, we keep.
+                    st.success("Translation ready!")
                 else:
                     st.error("Translation or TTS failed.")
 
 # ---- Right column: Output ----
-with col2:
-    st.subheader("💬 Translation & Reply")
+with col_right:
+    st.subheader("💬 Translation")
     if st.session_state.reply_text:
-        st.markdown(f"**Translation**: {st.session_state.reply_text}")
-    else:
-        st.info("Translation will appear here.")
-
-    if st.session_state.reply_audio:
+        st.markdown(f"**{reply_lang}**: {st.session_state.reply_text}")
         st.audio(st.session_state.reply_audio, format="audio/mp3")
     else:
-        st.info("Speech output will appear here.")
+        st.info("Translation and audio will appear here.")
 
     st.subheader("📜 Conversation History")
     if st.session_state.history:
@@ -296,13 +298,3 @@ with col2:
                 st.chat_message("assistant").write(msg["content"])
     else:
         st.info("No conversation yet.")
-
-# ---- Clear history button ----
-if st.sidebar.button("Clear History"):
-    st.session_state.history = []
-    st.session_state.reply_text = ""
-    st.session_state.reply_audio = None
-    st.session_state.transcribed_text = ""
-    st.rerun()
-
-# Cleanup on exit (not strictly needed)
