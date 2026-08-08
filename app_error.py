@@ -228,18 +228,18 @@ with st.sidebar:
         st.session_state.history = []
         st.session_state.reply_text = ""
         st.session_state.reply_audio = None
-        st.session_state.transcribed_text = ""
+        # Clear the keyed state for the transcription text area
+        st.session_state["transcription_edit"] = ""
         st.rerun()
 
 # Session state initialisation
 if "history" not in st.session_state:
     st.session_state.history = []
-if "transcribed_text" not in st.session_state:
-    st.session_state.transcribed_text = ""
 if "reply_text" not in st.session_state:
     st.session_state.reply_text = ""
 if "reply_audio" not in st.session_state:
     st.session_state.reply_audio = None
+# We don't need a separate 'transcribed_text' variable; we use the keyed state directly.
 
 col_left, col_right = st.columns([1, 1])
 
@@ -250,7 +250,7 @@ with col_left:
     audio_data = st.audio_input("Record from microphone")
     uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # ----- TRANSCRIBE BUTTON (single, clean) -----
+    # ----- TRANSCRIBE BUTTON -----
     if st.button("🎙️ Transcribe Audio", use_container_width=True):
         audio_bytes = None
         if audio_data is not None:
@@ -262,23 +262,24 @@ with col_left:
             with st.spinner("Transcribing..."):
                 text = transcribe_audio(audio_bytes, input_lang)
                 if text and text.strip():
-                    st.session_state.transcribed_text = text.strip()
+                    # Update the keyed state that the text area uses
+                    st.session_state["transcription_edit"] = text.strip()
                     st.success("Transcription complete. Edit below if needed.")
                 else:
                     st.error("No speech detected or transcription is empty. Please try again.")
         else:
             st.warning("No audio to transcribe. Record or upload first.")
 
-    # Editable transcription – with a non‑empty label (hidden)
     st.subheader("📝 Transcription (Edit if needed)")
+    # The text area is bound to the keyed state 'transcription_edit'.
     transcribed_edit = st.text_area(
-        "Transcription",  # Non‑empty label to avoid warning
-        value=st.session_state.transcribed_text,
+        "Transcription",  # Non-empty label, hidden for accessibility
         height=100,
         key="transcription_edit",
         label_visibility="hidden"
     )
 
+    # ----- TRANSLATE BUTTON -----
     if st.button("🔄 Translate & Reply", type="primary", use_container_width=True):
         if not transcribed_edit.strip():
             st.warning("Please enter or speak some text.")
