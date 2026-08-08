@@ -16,7 +16,7 @@ from openai import OpenAI
 st.set_page_config(page_title="Real‑Time Conversation Translator", layout="wide")
 
 # ============================================================
-# 🚀 API KEY CONFIGURATION (same as before)
+# 🚀 API KEY CONFIGURATION
 # ============================================================
 try:
     from google.colab import userdata
@@ -104,7 +104,6 @@ def transcribe_audio(audio_bytes, input_lang_name):
     if audio_bytes is None:
         return None
     try:
-        # Save audio bytes to a temporary file (Whisper expects a file path)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             tmp.write(audio_bytes)
             tmp_path = tmp.name
@@ -117,7 +116,6 @@ def transcribe_audio(audio_bytes, input_lang_name):
             task="transcribe"
         )
         text = " ".join(seg.text for seg in segments).strip()
-        # Clean up temp file
         try:
             os.remove(tmp_path)
         except:
@@ -230,37 +228,29 @@ col_left, col_right = st.columns([1, 1])
 with col_left:
     st.subheader("🎤 Speak or Upload Audio")
 
-    # Option 1: Record via browser (Streamlit built‑in)
+    # Input widgets
     audio_data = st.audio_input("Record from microphone")
-    # Option 2: Upload a file
     uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # Determine which audio to process
-    audio_bytes = None
-    if audio_data is not None:
-        audio_bytes = audio_data.getvalue()
-    elif uploaded_file is not None:
-        audio_bytes = uploaded_file.read()
-
-    # Determine which audio to process
-    audio_bytes = None
-    if audio_data is not None:
-        audio_bytes = audio_data.getvalue()
-    elif uploaded_file is not None:
-        audio_bytes = uploaded_file.read()
-    
-    # If we have new audio, transcribe automatically   <-- THIS IS THE CULPRIT
-    if audio_bytes:
-        with st.spinner("Transcribing..."):
-            text = transcribe_audio(audio_bytes, input_lang)
-            if text:
-                st.session_state.transcribed_text = text
-                st.success("Transcription complete. Edit below if needed.")
-            else:
-                st.error("No speech detected. Please try again.")
-        # Clear the audio input to avoid re‑processing on rerun?
-        # We can't clear st.audio_input directly, but we can set a flag.
-        # For simplicity, we won't clear; it's fine if it stays.
+    # ----- TRANSCRIBE BUTTON (only runs when clicked) -----
+    if st.button("🎙️ Transcribe Audio", use_container_width=True):
+        # Determine which audio to process
+        audio_bytes = None
+        if audio_data is not None:
+            audio_bytes = audio_data.getvalue()
+        elif uploaded_file is not None:
+            audio_bytes = uploaded_file.read()
+        
+        if audio_bytes:
+            with st.spinner("Transcribing..."):
+                text = transcribe_audio(audio_bytes, input_lang)
+                if text:
+                    st.session_state.transcribed_text = text
+                    st.success("Transcription complete. Edit below if needed.")
+                else:
+                    st.error("No speech detected. Please try again.")
+        else:
+            st.warning("No audio to transcribe. Record or upload first.")
 
     # Editable transcription
     st.subheader("📝 Transcription (Edit if needed)")
