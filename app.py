@@ -111,12 +111,11 @@ def transcribe_audio(audio_bytes, input_lang_name):
         segments, _ = whisper_model.transcribe(
             tmp_path,
             beam_size=1,
-            vad_filter=True,      # keep VAD, but we'll check if it works
+            vad_filter=True,
             language=lang_code,
             task="transcribe"
         )
         text = " ".join(seg.text for seg in segments).strip()
-        # If after stripping we have nothing, return None
         if not text:
             # Try without VAD as fallback
             segments, _ = whisper_model.transcribe(
@@ -135,6 +134,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
     except Exception as e:
         st.error(f"Transcription error: {e}")
         return None
+
 # ============================================================
 # 🗣️ TRANSLATION + TTS
 # ============================================================
@@ -212,7 +212,7 @@ with st.sidebar:
     st.header("🌍 Settings")
     input_lang = st.selectbox("Input Language", SUPPORTED_LANGUAGES, index=0)
     reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES, index=SUPPORTED_LANGUAGES.index("Malaysian Malay"))
-    model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)  # Llama-3.1 instant 8B
+    model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)
 
     if st.button("Clear History", use_container_width=True):
         st.session_state.history = []
@@ -223,7 +223,7 @@ with st.sidebar:
 
 # Session state initialisation
 if "history" not in st.session_state:
-    st.session_state.history = []  # list of dicts: {"role": "user"/"assistant", "content": text}
+    st.session_state.history = []
 if "transcribed_text" not in st.session_state:
     st.session_state.transcribed_text = ""
 if "reply_text" not in st.session_state:
@@ -231,42 +231,16 @@ if "reply_text" not in st.session_state:
 if "reply_audio" not in st.session_state:
     st.session_state.reply_audio = None
 
-# Main area – columns
 col_left, col_right = st.columns([1, 1])
 
-# ---- Left column: Audio input and transcription ----
+# ---- Left column ----
 with col_left:
     st.subheader("🎤 Speak or Upload Audio")
 
-    # Input widgets
     audio_data = st.audio_input("Record from microphone")
     uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # ----- TRANSCRIBE BUTTON (only runs when clicked) -----
-    if st.button("🎙️ Transcribe Audio", use_container_width=True):
-        # Determine which audio to process
-        audio_bytes = None
-        if audio_data is not None:
-            audio_bytes = audio_data.getvalue()
-        elif uploaded_file is not None:
-            audio_bytes = uploaded_file.read()
-        
-        if audio_bytes:
-            with st.spinner("Transcribing..."):
-                text = transcribe_audio(audio_bytes, input_lang)
-                if text:
-                    st.session_state.transcribed_text = text
-                    st.success("Transcription complete. Edit below if needed.")
-                else:
-                    st.error("No speech detected. Please try again.")
-        else:
-            st.warning("No audio to transcribe. Record or upload first.")
-
-    # Editable transcription
-    st.subheader("📝 Transcription (Edit if needed)")
-    transcribed_edit = st.text_area("", value=st.session_state.transcribed_text, height=100, key="transcription_edit")
-
-    # ----- TRANSCRIBE BUTTON (only runs when clicked) -----
+    # ----- SINGLE TRANSCRIBE BUTTON (improved) -----
     if st.button("🎙️ Transcribe Audio", use_container_width=True):
         audio_bytes = None
         if audio_data is not None:
@@ -277,7 +251,7 @@ with col_left:
         if audio_bytes:
             with st.spinner("Transcribing..."):
                 text = transcribe_audio(audio_bytes, input_lang)
-                # Debug (remove later)
+                # Debug line (remove later)
                 st.write(f"**Debug:** raw text = `{text}` (length {len(text) if text else 0})")
                 if text and text.strip():
                     st.session_state.transcribed_text = text.strip()
@@ -287,7 +261,30 @@ with col_left:
         else:
             st.warning("No audio to transcribe. Record or upload first.")
 
-# ---- Right column: Output ----
+    st.subheader("📝 Transcription (Edit if needed)")
+    transcribed_edit = st.text_area("", value=st.session_state.transcribed_text, height=100, key="transcription_edit")
+
+    if st.button("🔄 Translate & Reply", type="primary", use_container_width=True):
+        if not transcribed_edit.strip():
+            st.warning("Please enter or speak some text.")
+        else:
+            with st.spinner("Translating and generating speech..."):
+                reply_text, audio_file = translate_and_speak(
+                    transcribed_edit,
+                    input_lang,
+                    reply_lang,
+                    model_choice
+                )
+                if reply_text and audio_file:
+                    st.session_state.reply_text = reply_text
+                    st.session_state.reply_audio = audio_file
+                    st.session_state.history.append({"role": "user", "content": f"{input_lang}: {transcribed_edit}"})
+                    st.session_state.history.append({"role": "assistant", "content": f"{reply_lang}: {reply_text}"})
+                    st.success("Translation ready!")
+                else:
+                    st.error("Translation or TTS failed.")
+
+# ---- Right column ----
 with col_right:
     st.subheader("💬 Translation")
     if st.session_state.reply_text:
