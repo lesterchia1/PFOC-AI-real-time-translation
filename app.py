@@ -98,23 +98,24 @@ def cleanup_memory():
         torch.cuda.empty_cache()
 
 # ============================================================
-# 🗣️ TRANSCRIPTION (optimised – no temp file)
+# 🗣️ TRANSCRIPTION – using temp file for robust format support
 # ============================================================
 def transcribe_audio(audio_bytes, input_lang_name):
     """
-    Transcribe audio bytes directly without writing to disk.
+    Transcribe audio bytes by saving to a temporary file.
+    This handles WAV, MP3, etc. because Whisper uses ffmpeg internally.
     """
     if audio_bytes is None:
         return None
     try:
-        # Convert bytes to int16 numpy array
-        audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
-        # Whisper expects float32 in [-1, 1]
-        audio_float32 = audio_int16.astype(np.float32) / 32768.0
+        # Save to a temporary WAV file (but actually any format works)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
 
         lang_code = LANGUAGE_CODES.get(input_lang_name, "en")
         segments, _ = whisper_model.transcribe(
-            audio_float32,      # Pass numpy array directly
+            tmp_path,
             beam_size=1,
             vad_filter=True,
             language=lang_code,
@@ -122,15 +123,22 @@ def transcribe_audio(audio_bytes, input_lang_name):
         )
         text = " ".join(seg.text for seg in segments).strip()
         if not text:
-            # Fallback without VAD (may pick up background noise – but worth a try)
+            # Fallback without VAD
             segments, _ = whisper_model.transcribe(
-                audio_float32,
+                tmp_path,
                 beam_size=1,
                 vad_filter=False,
                 language=lang_code,
                 task="transcribe"
             )
             text = " ".join(seg.text for seg in segments).strip()
+
+        # Clean up temp file
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
+
         return text if text else None
     except Exception as e:
         st.error(f"Transcription error: {e}")
@@ -242,7 +250,7 @@ with col_left:
     audio_data = st.audio_input("Record from microphone")
     uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # ----- TRANSCRIBE BUTTON (cleaned) -----
+    # ----- TRANSCRIBE BUTTON (single, clean) -----
     if st.button("🎙️ Transcribe Audio", use_container_width=True):
         audio_bytes = None
         if audio_data is not None:
@@ -261,8 +269,15 @@ with col_left:
         else:
             st.warning("No audio to transcribe. Record or upload first.")
 
+    # Editable transcription – with a non‑empty label (hidden)
     st.subheader("📝 Transcription (Edit if needed)")
-    transcribed_edit = st.text_area("", value=st.session_state.transcribed_text, height=100, key="transcription_edit")
+    transcribed_edit = st.text_area(
+        "Transcription",  # Non‑empty label to avoid warning
+        value=st.session_state.transcribed_text,
+        height=100,
+        key="transcription_edit",
+        label_visibility="hidden"
+    )
 
     if st.button("🔄 Translate & Reply", type="primary", use_container_width=True):
         if not transcribed_edit.strip():
