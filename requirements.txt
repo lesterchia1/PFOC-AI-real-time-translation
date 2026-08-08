@@ -1,0 +1,8 @@
+streamlit
+torch
+faster-whisper
+edge-tts
+groq
+openai
+numpy
+streamlit-audio-recorder
