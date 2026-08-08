@@ -242,7 +242,14 @@ with col_left:
     elif uploaded_file is not None:
         audio_bytes = uploaded_file.read()
 
-    # If we have new audio, transcribe automatically
+    # Determine which audio to process
+    audio_bytes = None
+    if audio_data is not None:
+        audio_bytes = audio_data.getvalue()
+    elif uploaded_file is not None:
+        audio_bytes = uploaded_file.read()
+    
+    # If we have new audio, transcribe automatically   <-- THIS IS THE CULPRIT
     if audio_bytes:
         with st.spinner("Transcribing..."):
             text = transcribe_audio(audio_bytes, input_lang)
