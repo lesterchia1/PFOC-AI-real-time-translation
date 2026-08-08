@@ -143,6 +143,9 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         return None, None
 
     try:
+        # Delete old audio files before creating a new one
+        cleanup_memory()
+
         model_id = AVAILABLE_MODELS.get(model_choice, "llama-3.1-8b-instant")
         if model_choice == "SEA-LION v4 27B":
             client = sealion_client
@@ -198,8 +201,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
     except Exception as e:
         st.error(f"Translation/TTS error: {e}")
         return None, None
-    finally:
-        cleanup_memory()
+    # No finally block here – we keep the file for playback
 
 # ============================================================
 # 🖥️ STREAMLIT UI
