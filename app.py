@@ -111,11 +111,22 @@ def transcribe_audio(audio_bytes, input_lang_name):
         segments, _ = whisper_model.transcribe(
             tmp_path,
             beam_size=1,
-            vad_filter=True,
+            vad_filter=True,      # keep VAD, but we'll check if it works
             language=lang_code,
             task="transcribe"
         )
         text = " ".join(seg.text for seg in segments).strip()
+        # If after stripping we have nothing, return None
+        if not text:
+            # Try without VAD as fallback
+            segments, _ = whisper_model.transcribe(
+                tmp_path,
+                beam_size=1,
+                vad_filter=False,
+                language=lang_code,
+                task="transcribe"
+            )
+            text = " ".join(seg.text for seg in segments).strip()
         try:
             os.remove(tmp_path)
         except:
@@ -124,7 +135,6 @@ def transcribe_audio(audio_bytes, input_lang_name):
     except Exception as e:
         st.error(f"Transcription error: {e}")
         return None
-
 # ============================================================
 # 🗣️ TRANSLATION + TTS
 # ============================================================
