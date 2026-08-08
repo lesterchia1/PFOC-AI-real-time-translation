@@ -1,0 +1,304 @@
+import streamlit as st
+import os
+import tempfile
+import torch
+import gc
+import asyncio
+import numpy as np
+from faster_whisper import WhisperModel
+import edge_tts
+from groq import Groq
+from openai import OpenAI
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+st.set_page_config(page_title="Real‑Time Conversation Translator", layout="wide")
+
+# ============================================================
+# 🚀 API KEY CONFIGURATION
+# ============================================================
+try:
+    from google.colab import userdata
+    GROQ_API_KEY = userdata.get('GROQ_API_KEY')
+    SEALION_API_KEY = userdata.get('SEALION_API_KEY')
+    HF_TOKEN = userdata.get('HF_TOKEN')
+except ImportError:
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+    SEALION_API_KEY = os.environ.get("SEALION_API_KEY")
+    HF_TOKEN = os.environ.get("HF_TOKEN")
+
+if not GROQ_API_KEY or not SEALION_API_KEY:
+    st.error("Missing API keys. Set GROQ_API_KEY and SEALION_API_KEY in environment or secrets.")
+    st.stop()
+
+if HF_TOKEN:
+    os.environ["HF_TOKEN"] = HF_TOKEN
+
+groq_client = Groq(api_key=GROQ_API_KEY)
+SEALION_BASE_URL = "https://api.sea-lion.ai/v1"
+sealion_client = OpenAI(api_key=SEALION_API_KEY, base_url=SEALION_BASE_URL)
+
+# ============================================================
+# 🌍 LANGUAGE & MODEL REGISTRIES
+# ============================================================
+SUPPORTED_LANGUAGES = [
+    "English", "Chinese", "Thai",
+    "Malaysian Malay", "Indonesian Malay",
+    "Korean", "Japanese", "Spanish", "German",
+    "Hindi", "Urdu", "French", "Russian",
+    "Tagalog", "Arabic", "Myanmar", "Vietnamese",
+    "Khmer"
+]
+
+LANGUAGE_CODES = {
+    "English": "en", "Chinese": "zh", "Thai": "th",
+    "Malaysian Malay": "ms", "Indonesian Malay": "id",
+    "Korean": "ko", "Japanese": "ja", "Spanish": "es",
+    "German": "de", "Hindi": "hi", "Urdu": "ur",
+    "French": "fr", "Russian": "ru", "Tagalog": "tl",
+    "Arabic": "ar", "Myanmar": "my", "Vietnamese": "vi",
+    "Khmer": "km"
+}
+
+AVAILABLE_MODELS = {
+    "SEA-LION v4 27B": "aisingapore/Gemma-SEA-LION-v4-27B-IT",
+    "Qwen3 32B": "qwen/qwen3-32b",
+    "kimi-k2": "moonshotai/kimi-k2-instruct-0905",
+    "Llama-3.3 70B": "llama-3.3-70b-versatile",
+    "Llama-3.1 instant 8B": "llama-3.1-8b-instant",
+    "Llama-4 guard 12B": "meta-llama/llama-guard-4-12b"
+}
+
+# ============================================================
+# 🎙️ FAST-WHISPER (GPU/CPU auto-detect) – cached
+# ============================================================
+@st.cache_resource
+def load_whisper_model():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    compute_type = "float16" if device == "cuda" else "int8"
+    st.write(f"🚀 Running Whisper on: {device} with {compute_type}")
+    return WhisperModel("small", device=device, compute_type=compute_type)
+
+whisper_model = load_whisper_model()
+
+# ============================================================
+# 🧹 MEMORY CLEANUP (only for old TTS files)
+# ============================================================
+def cleanup_memory():
+    temp_dir = tempfile.gettempdir()
+    for f in os.listdir(temp_dir):
+        if f.endswith(".mp3") or f.endswith(".wav"):
+            try:
+                os.remove(os.path.join(temp_dir, f))
+            except:
+                pass
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+# ============================================================
+# 🗣️ TRANSCRIPTION (optimised – no temp file)
+# ============================================================
+def transcribe_audio(audio_bytes, input_lang_name):
+    """
+    Transcribe audio bytes directly without writing to disk.
+    """
+    if audio_bytes is None:
+        return None
+    try:
+        # Convert bytes to int16 numpy array
+        audio_int16 = np.frombuffer(audio_bytes, dtype=np.int16)
+        # Whisper expects float32 in [-1, 1]
+        audio_float32 = audio_int16.astype(np.float32) / 32768.0
+
+        lang_code = LANGUAGE_CODES.get(input_lang_name, "en")
+        segments, _ = whisper_model.transcribe(
+            audio_float32,      # Pass numpy array directly
+            beam_size=1,
+            vad_filter=True,
+            language=lang_code,
+            task="transcribe"
+        )
+        text = " ".join(seg.text for seg in segments).strip()
+        if not text:
+            # Fallback without VAD (may pick up background noise – but worth a try)
+            segments, _ = whisper_model.transcribe(
+                audio_float32,
+                beam_size=1,
+                vad_filter=False,
+                language=lang_code,
+                task="transcribe"
+            )
+            text = " ".join(seg.text for seg in segments).strip()
+        return text if text else None
+    except Exception as e:
+        st.error(f"Transcription error: {e}")
+        return None
+
+# ============================================================
+# 🗣️ TRANSLATION + TTS
+# ============================================================
+def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
+    if not text:
+        return None, None
+
+    try:
+        # Delete old audio files before creating a new one (reduces clutter)
+        cleanup_memory()
+
+        model_id = AVAILABLE_MODELS.get(model_choice, "llama-3.1-8b-instant")
+        if model_choice == "SEA-LION v4 27B":
+            client = sealion_client
+        else:
+            client = groq_client
+
+        system_prompt = "You are a translator. Output ONLY the translation, no explanations or extra text."
+        user_prompt = f"Translate from {input_lang_name} to {reply_lang_name}: {text}"
+        response = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.0
+        )
+        translation = response.choices[0].message.content.strip()
+
+        # TTS (edge-tts)
+        reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
+        voice_map = {
+            "en": "en-US-JennyNeural",
+            "ms": "ms-MY-YasminNeural",
+            "zh": "zh-CN-XiaoxiaoNeural",
+            "id": "id-ID-GadisNeural",
+            "th": "th-TH-PremwadeeNeural",
+            "ja": "ja-JP-NanamiNeural",
+            "ko": "ko-KR-SunHiNeural",
+            "es": "es-ES-ElviraNeural",
+            "fr": "fr-FR-DeniseNeural",
+            "de": "de-DE-KatjaNeural",
+            "ru": "ru-RU-SvetlanaNeural",
+            "ar": "ar-EG-SalmaNeural",
+            "vi": "vi-VN-HoaiMyNeural",
+            "hi": "hi-IN-SwaraNeural",
+            "ta": "ta-IN-PallaviNeural",
+            "my": "my-MM-NilarNeural",
+            "km": "km-KH-SreymomNeural",
+            "tl": "fil-PH-AngeloNeural",
+        }
+        voice = voice_map.get(reply_lang_code, "en-US-JennyNeural")
+        output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        output_file.close()
+
+        async def tts_task():
+            communicate = edge_tts.Communicate(translation, voice)
+            await communicate.save(output_file.name)
+
+        asyncio.run(tts_task())
+
+        return translation, output_file.name
+
+    except Exception as e:
+        st.error(f"Translation/TTS error: {e}")
+        return None, None
+
+# ============================================================
+# 🖥️ STREAMLIT UI
+# ============================================================
+st.title("🎙️ Real‑Time Conversation Translator")
+st.markdown("Select languages, record or upload audio, then translate and hear the reply.")
+
+# Sidebar – settings
+with st.sidebar:
+    st.header("🌍 Settings")
+    input_lang = st.selectbox("Input Language", SUPPORTED_LANGUAGES, index=0)
+    reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES, index=SUPPORTED_LANGUAGES.index("Malaysian Malay"))
+    model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)
+
+    if st.button("Clear History", use_container_width=True):
+        st.session_state.history = []
+        st.session_state.reply_text = ""
+        st.session_state.reply_audio = None
+        st.session_state.transcribed_text = ""
+        st.rerun()
+
+# Session state initialisation
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "transcribed_text" not in st.session_state:
+    st.session_state.transcribed_text = ""
+if "reply_text" not in st.session_state:
+    st.session_state.reply_text = ""
+if "reply_audio" not in st.session_state:
+    st.session_state.reply_audio = None
+
+col_left, col_right = st.columns([1, 1])
+
+# ---- Left column ----
+with col_left:
+    st.subheader("🎤 Speak or Upload Audio")
+
+    audio_data = st.audio_input("Record from microphone")
+    uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
+
+    # ----- TRANSCRIBE BUTTON (cleaned) -----
+    if st.button("🎙️ Transcribe Audio", use_container_width=True):
+        audio_bytes = None
+        if audio_data is not None:
+            audio_bytes = audio_data.getvalue()
+        elif uploaded_file is not None:
+            audio_bytes = uploaded_file.read()
+        
+        if audio_bytes:
+            with st.spinner("Transcribing..."):
+                text = transcribe_audio(audio_bytes, input_lang)
+                if text and text.strip():
+                    st.session_state.transcribed_text = text.strip()
+                    st.success("Transcription complete. Edit below if needed.")
+                else:
+                    st.error("No speech detected or transcription is empty. Please try again.")
+        else:
+            st.warning("No audio to transcribe. Record or upload first.")
+
+    st.subheader("📝 Transcription (Edit if needed)")
+    transcribed_edit = st.text_area("", value=st.session_state.transcribed_text, height=100, key="transcription_edit")
+
+    if st.button("🔄 Translate & Reply", type="primary", use_container_width=True):
+        if not transcribed_edit.strip():
+            st.warning("Please enter or speak some text.")
+        else:
+            with st.spinner("Translating and generating speech..."):
+                reply_text, audio_file = translate_and_speak(
+                    transcribed_edit,
+                    input_lang,
+                    reply_lang,
+                    model_choice
+                )
+                if reply_text and audio_file:
+                    st.session_state.reply_text = reply_text
+                    st.session_state.reply_audio = audio_file
+                    st.session_state.history.append({"role": "user", "content": f"{input_lang}: {transcribed_edit}"})
+                    st.session_state.history.append({"role": "assistant", "content": f"{reply_lang}: {reply_text}"})
+                    st.success("Translation ready!")
+                else:
+                    st.error("Translation or TTS failed.")
+
+# ---- Right column ----
+with col_right:
+    st.subheader("💬 Translation")
+    if st.session_state.reply_text:
+        st.markdown(f"**{reply_lang}**: {st.session_state.reply_text}")
+        st.audio(st.session_state.reply_audio, format="audio/mp3")
+    else:
+        st.info("Translation and audio will appear here.")
+
+    st.subheader("📜 Conversation History")
+    if st.session_state.history:
+        for msg in st.session_state.history:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            else:
+                st.chat_message("assistant").write(msg["content"])
+    else:
+        st.info("No conversation yet.")
