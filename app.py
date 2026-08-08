@@ -266,26 +266,26 @@ with col_left:
     st.subheader("📝 Transcription (Edit if needed)")
     transcribed_edit = st.text_area("", value=st.session_state.transcribed_text, height=100, key="transcription_edit")
 
-    # Translate button
-    if st.button("🔄 Translate & Reply", type="primary", use_container_width=True):
-        if not transcribed_edit.strip():
-            st.warning("Please enter or speak some text.")
-        else:
-            with st.spinner("Translating and generating speech..."):
-                reply_text, audio_file = translate_and_speak(
-                    transcribed_edit,
-                    input_lang,
-                    reply_lang,
-                    model_choice
-                )
-                if reply_text and audio_file:
-                    st.session_state.reply_text = reply_text
-                    st.session_state.reply_audio = audio_file
-                    st.session_state.history.append({"role": "user", "content": f"{input_lang}: {transcribed_edit}"})
-                    st.session_state.history.append({"role": "assistant", "content": f"{reply_lang}: {reply_text}"})
-                    st.success("Translation ready!")
+    # ----- TRANSCRIBE BUTTON (only runs when clicked) -----
+    if st.button("🎙️ Transcribe Audio", use_container_width=True):
+        audio_bytes = None
+        if audio_data is not None:
+            audio_bytes = audio_data.getvalue()
+        elif uploaded_file is not None:
+            audio_bytes = uploaded_file.read()
+        
+        if audio_bytes:
+            with st.spinner("Transcribing..."):
+                text = transcribe_audio(audio_bytes, input_lang)
+                # Debug (remove later)
+                st.write(f"**Debug:** raw text = `{text}` (length {len(text) if text else 0})")
+                if text and text.strip():
+                    st.session_state.transcribed_text = text.strip()
+                    st.success("Transcription complete. Edit below if needed.")
                 else:
-                    st.error("Translation or TTS failed.")
+                    st.error("No speech detected or transcription is empty. Please try again.")
+        else:
+            st.warning("No audio to transcribe. Record or upload first.")
 
 # ---- Right column: Output ----
 with col_right:
