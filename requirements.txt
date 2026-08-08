@@ -5,4 +5,3 @@ edge-tts
 groq
 openai
 numpy
-streamlit-audio-recorder
