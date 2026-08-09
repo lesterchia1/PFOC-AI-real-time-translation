@@ -61,12 +61,12 @@ LANGUAGE_CODES = {
     "Arabic": "ar", "Myanmar": "my", "Vietnamese": "vi",
     "Khmer": "km"
 }
-# More explicit names for translation prompts
+# Explicit names for translation prompts
 LANGUAGE_PROMPT_NAMES = {
     "Malaysian Malay": "Malay (ms)",
     "Indonesian Malay": "Indonesian (id)",
     "English": "English",
-    "Simplified Chinese": "Simplified Chinese",
+    "Chinese": "Simplified Chinese",
     "Thai": "Thai",
     "Korean": "Korean",
     "Japanese": "Japanese",
@@ -105,7 +105,7 @@ def load_whisper_model():
 whisper_model = load_whisper_model()
 
 # ============================================================
-# 🧹 MEMORY CLEANUP
+# 🧹 MEMORY CLEANUP (delete old audio files)
 # ============================================================
 def cleanup_memory():
     temp_dir = tempfile.gettempdir()
@@ -165,13 +165,14 @@ def transcribe_audio(audio_bytes, input_lang_name):
         return None, None
 
 # ============================================================
-# 🗣️ TRANSLATION + TTS (improved with fallback and debugging)
+# 🗣️ TRANSLATION + TTS (with fallback and file check)
 # ============================================================
 def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
     if not text:
         return None, "No text to translate."
 
     try:
+        # Delete old audio files BEFORE creating a new one
         cleanup_memory()
 
         model_id = AVAILABLE_MODELS.get(model_choice, "llama-3.1-8b-instant")
@@ -180,11 +181,11 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         else:
             client = groq_client
 
-        # Use more explicit language names
+        # Use explicit language names
         input_prompt = LANGUAGE_PROMPT_NAMES.get(input_lang_name, input_lang_name)
         reply_prompt = LANGUAGE_PROMPT_NAMES.get(reply_lang_name, reply_lang_name)
 
-        # First attempt
+        # First translation attempt
         system_prompt = "You are a translator. Output ONLY the translation, no explanations or extra text."
         user_prompt = f"Translate the following {input_prompt} text to {reply_prompt}. Do not add any extra text. Text: {text}"
         response = client.chat.completions.create(
@@ -219,7 +220,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         if translation == text:
             return None, "Translation returned the same text. Try a different model or language pair."
 
-        # TTS
+        # ---- TTS ----
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
         voice_map = {
             "en": "en-US-JennyNeural",
@@ -245,13 +246,22 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
         output_file.close()
 
-        async def tts_task():
-            communicate = edge_tts.Communicate(translation, voice)
-            await communicate.save(output_file.name)
+        # Generate TTS
+        try:
+            async def tts_task():
+                communicate = edge_tts.Communicate(translation, voice)
+                await communicate.save(output_file.name)
+            asyncio.run(tts_task())
+        except Exception as tts_e:
+            # TTS failed – return translation without audio
+            st.session_state.last_tts_error = str(tts_e)
+            return translation, None
 
-        asyncio.run(tts_task())
-
-        return translation, output_file.name
+        # Check that file exists and has content
+        if os.path.exists(output_file.name) and os.path.getsize(output_file.name) > 0:
+            return translation, output_file.name
+        else:
+            return translation, None
 
     except Exception as e:
         return None, f"API Error: {str(e)}"
@@ -259,14 +269,15 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
 # ============================================================
 # 🖥️ STREAMLIT UI
 # ============================================================
-st.title("🎙️ R1.3 Real‑Time Conversation Translator")
+st.title("🎙️ R1.4 Real‑Time Conversation Translator")
 st.markdown("**Auto‑detect source language** and **two‑way conversation** support.")
 
 # Sidebar – settings
 with st.sidebar:
     st.header("🌍 Settings")
     input_lang = st.selectbox("Input Language (or Auto)", SUPPORTED_LANGUAGES, index=0)
-    reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES, index=SUPPORTED_LANGUAGES.index("Malaysian Malay") if "Malaysian Malay" in SUPPORTED_LANGUAGES else 1)
+    reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES,
+                              index=SUPPORTED_LANGUAGES.index("Malaysian Malay") if "Malaysian Malay" in SUPPORTED_LANGUAGES else 1)
     model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)
 
     two_way = st.checkbox("Two‑way Conversation", value=False,
@@ -274,7 +285,6 @@ with st.sidebar:
     if two_way:
         st.info("The app will swap Input and Reply languages after each turn.")
 
-    # DEBUG: Show raw translation responses
     show_debug = st.checkbox("Show Debug Info", value=False)
 
     if st.button("Clear History", use_container_width=True):
@@ -286,6 +296,7 @@ with st.sidebar:
         st.session_state.last_error = ""
         st.session_state.raw_translation = ""
         st.session_state.raw_prompt = ""
+        st.session_state.last_tts_error = ""
         st.rerun()
 
 # Session state
@@ -307,6 +318,8 @@ if "raw_translation" not in st.session_state:
     st.session_state.raw_translation = ""
 if "raw_prompt" not in st.session_state:
     st.session_state.raw_prompt = ""
+if "last_tts_error" not in st.session_state:
+    st.session_state.last_tts_error = ""
 
 col_left, col_right = st.columns([1, 1])
 
@@ -352,16 +365,23 @@ with col_left:
                     else:
                         source_display = current_input
 
-                    # Translate
+                    # Translate & TTS
                     translation, audio_file = translate_and_speak(
                         text,
                         source_display,
                         current_reply,
                         model_choice
                     )
-                    if translation and audio_file:
+                    if translation:
                         st.session_state.reply_text = translation
-                        st.session_state.reply_audio = audio_file
+                        # Only set audio if file exists
+                        if audio_file and os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
+                            st.session_state.reply_audio = audio_file
+                        else:
+                            st.session_state.reply_audio = None
+                            if st.session_state.last_tts_error:
+                                st.warning(f"TTS error: {st.session_state.last_tts_error}")
+
                         st.session_state.history.append({
                             "role": "user",
                             "content": f"{source_display}: {text}"
@@ -417,9 +437,15 @@ with col_left:
                     current_reply,
                     model_choice
                 )
-                if translation and audio_file:
+                if translation:
                     st.session_state.reply_text = translation
-                    st.session_state.reply_audio = audio_file
+                    if audio_file and os.path.exists(audio_file) and os.path.getsize(audio_file) > 0:
+                        st.session_state.reply_audio = audio_file
+                    else:
+                        st.session_state.reply_audio = None
+                        if st.session_state.last_tts_error:
+                            st.warning(f"TTS error: {st.session_state.last_tts_error}")
+
                     st.session_state.history.append({
                         "role": "user",
                         "content": f"{current_input}: {transcribed_edit}"
@@ -449,15 +475,20 @@ with col_left:
             st.text_area("Last Prompt", st.session_state.raw_prompt, height=80)
         if st.session_state.raw_translation:
             st.text_area("Raw Translation", st.session_state.raw_translation, height=80)
+        if st.session_state.last_tts_error:
+            st.warning(f"TTS Error: {st.session_state.last_tts_error}")
 
 # ---- Right column ----
 with col_right:
     st.subheader("💬 Translation")
     if st.session_state.reply_text:
         st.markdown(f"**Translation**: {st.session_state.reply_text}")
-        st.audio(st.session_state.reply_audio, format="audio/mp3")
+        if st.session_state.reply_audio and os.path.exists(st.session_state.reply_audio):
+            st.audio(st.session_state.reply_audio, format="audio/mp3")
+        else:
+            st.info("Audio not available (TTS may have failed).")
     else:
-        st.info("Translation and audio will appear here.")
+        st.info("Translation will appear here.")
 
     st.subheader("📜 Conversation History")
     if st.session_state.history:
