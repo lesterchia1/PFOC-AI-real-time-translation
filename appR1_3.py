@@ -43,7 +43,7 @@ sealion_client = OpenAI(api_key=SEALION_API_KEY, base_url=SEALION_BASE_URL)
 # 🌍 LANGUAGE & MODEL REGISTRIES
 # ============================================================
 SUPPORTED_LANGUAGES = [
-    "Auto",  # NEW: auto‑detect
+    "Auto",
     "English", "Chinese", "Thai",
     "Malaysian Malay", "Indonesian Malay",
     "Korean", "Japanese", "Spanish", "German",
@@ -61,7 +61,27 @@ LANGUAGE_CODES = {
     "Arabic": "ar", "Myanmar": "my", "Vietnamese": "vi",
     "Khmer": "km"
 }
-# Auto is not in LANGUAGE_CODES; handled separately.
+# Map display names to more LLM‑friendly labels
+LANGUAGE_PROMPT_NAMES = {
+    "Malaysian Malay": "Malay (ms)",
+    "Indonesian Malay": "Indonesian (id)",
+    "English": "English",
+    "Chinese": "Chinese",
+    "Thai": "Thai",
+    "Korean": "Korean",
+    "Japanese": "Japanese",
+    "Spanish": "Spanish",
+    "German": "German",
+    "Hindi": "Hindi",
+    "Urdu": "Urdu",
+    "French": "French",
+    "Russian": "Russian",
+    "Tagalog": "Tagalog",
+    "Arabic": "Arabic",
+    "Myanmar": "Myanmar",
+    "Vietnamese": "Vietnamese",
+    "Khmer": "Khmer"
+}
 
 AVAILABLE_MODELS = {
     "SEA-LION v4 27B": "aisingapore/Gemma-SEA-LION-v4-27B-IT",
@@ -103,11 +123,6 @@ def cleanup_memory():
 # 🗣️ TRANSCRIPTION – with auto‑detect
 # ============================================================
 def transcribe_audio(audio_bytes, input_lang_name):
-    """
-    Transcribe audio. If input_lang_name == "Auto", use language=None
-    and return detected language code from info.
-    Returns: (text, detected_lang_code)
-    """
     if audio_bytes is None:
         return None, None
     try:
@@ -126,7 +141,6 @@ def transcribe_audio(audio_bytes, input_lang_name):
         )
         text = " ".join(seg.text for seg in segments).strip()
         if not text:
-            # Fallback without VAD
             segments, info = whisper_model.transcribe(
                 tmp_path,
                 beam_size=1,
@@ -151,11 +165,11 @@ def transcribe_audio(audio_bytes, input_lang_name):
         return None, None
 
 # ============================================================
-# 🗣️ TRANSLATION + TTS
+# 🗣️ TRANSLATION + TTS (with detailed error reporting)
 # ============================================================
 def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
     if not text:
-        return None, None
+        return None, "No text to translate."
 
     try:
         cleanup_memory()
@@ -166,8 +180,12 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         else:
             client = groq_client
 
+        # Use more LLM‑friendly language names
+        input_prompt = LANGUAGE_PROMPT_NAMES.get(input_lang_name, input_lang_name)
+        reply_prompt = LANGUAGE_PROMPT_NAMES.get(reply_lang_name, reply_lang_name)
+
         system_prompt = "You are a translator. Output ONLY the translation, no explanations or extra text."
-        user_prompt = f"Translate from {input_lang_name} to {reply_lang_name}: {text}"
+        user_prompt = f"Translate from {input_prompt} to {reply_prompt}: {text}"
         response = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -177,6 +195,9 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
             temperature=0.0
         )
         translation = response.choices[0].message.content.strip()
+
+        if not translation:
+            return None, "Translation was empty."
 
         # TTS
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
@@ -213,8 +234,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         return translation, output_file.name
 
     except Exception as e:
-        st.error(f"Translation/TTS error: {e}")
-        return None, None
+        return None, f"API Error: {str(e)}"
 
 # ============================================================
 # 🖥️ STREAMLIT UI
@@ -234,12 +254,16 @@ with st.sidebar:
     if two_way:
         st.info("The app will swap Input and Reply languages after each turn.")
 
+    # DEBUG: Show raw translation responses
+    show_debug = st.checkbox("Show Debug Info", value=False)
+
     if st.button("Clear History", use_container_width=True):
         st.session_state.history = []
         st.session_state.reply_text = ""
         st.session_state.reply_audio = None
         st.session_state["transcription_edit"] = ""
         st.session_state.swap_flag = False
+        st.session_state.last_error = ""
         st.rerun()
 
 # Session state
@@ -255,6 +279,8 @@ if "last_input" not in st.session_state:
     st.session_state.last_input = None
 if "last_reply" not in st.session_state:
     st.session_state.last_reply = None
+if "last_error" not in st.session_state:
+    st.session_state.last_error = ""
 
 col_left, col_right = st.columns([1, 1])
 
@@ -272,12 +298,11 @@ with col_left:
             audio_bytes = audio_data.getvalue()
         elif uploaded_file is not None:
             audio_bytes = uploaded_file.read()
-        
+
         if audio_bytes:
             with st.spinner("Processing..."):
                 # Determine current languages (with swap logic)
                 if two_way and st.session_state.swap_flag:
-                    # Use swapped languages
                     if st.session_state.last_input and st.session_state.last_reply:
                         current_input, current_reply = st.session_state.last_reply, st.session_state.last_input
                     else:
@@ -292,13 +317,12 @@ with col_left:
                 else:
                     # Determine source language display
                     if current_input == "Auto" and detected_lang:
-                        # Map code to display name
                         for name, code in LANGUAGE_CODES.items():
                             if code == detected_lang:
                                 source_display = name
                                 break
                         else:
-                            source_display = detected_lang  # fallback
+                            source_display = detected_lang
                     else:
                         source_display = current_input
 
@@ -312,7 +336,6 @@ with col_left:
                     if translation and audio_file:
                         st.session_state.reply_text = translation
                         st.session_state.reply_audio = audio_file
-                        # Update history
                         st.session_state.history.append({
                             "role": "user",
                             "content": f"{source_display}: {text}"
@@ -322,9 +345,9 @@ with col_left:
                             "content": f"{current_reply}: {translation}"
                         })
                         st.session_state["transcription_edit"] = text
+                        st.session_state.last_error = ""
                         st.success("Translation ready!")
 
-                        # If two‑way, toggle swap flag and store the languages used
                         if two_way:
                             st.session_state.last_input = current_input
                             st.session_state.last_reply = current_reply
@@ -332,7 +355,9 @@ with col_left:
                             if st.session_state.swap_flag:
                                 st.info("Swapped languages for next turn.")
                     else:
-                        st.error("Translation or TTS failed.")
+                        error_msg = audio_file if audio_file else "Unknown error"
+                        st.session_state.last_error = error_msg
+                        st.error(f"Translation failed: {error_msg}")
         else:
             st.warning("No audio to process. Record or upload first.")
 
@@ -377,6 +402,7 @@ with col_left:
                         "role": "assistant",
                         "content": f"{current_reply}: {translation}"
                     })
+                    st.session_state.last_error = ""
                     st.success("Translation ready!")
                     if two_way:
                         st.session_state.last_input = current_input
@@ -385,7 +411,15 @@ with col_left:
                         if st.session_state.swap_flag:
                             st.info("Swapped languages for next turn.")
                 else:
-                    st.error("Translation or TTS failed.")
+                    error_msg = audio_file if audio_file else "Unknown error"
+                    st.session_state.last_error = error_msg
+                    st.error(f"Translation failed: {error_msg}")
+
+    # Show debug info if enabled
+    if show_debug and st.session_state.last_error:
+        st.warning(f"Debug: Last error = {st.session_state.last_error}")
+    if show_debug and st.session_state.reply_text:
+        st.info(f"Debug: Translation = {st.session_state.reply_text}")
 
 # ---- Right column ----
 with col_right:
