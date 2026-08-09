@@ -171,7 +171,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         return None, None, "No text to translate."
 
     try:
-        cleanup_memory()  # delete old files before creating new
+        cleanup_memory()
 
         model_id = AVAILABLE_MODELS.get(model_choice, "llama-3.1-8b-instant")
         if model_choice == "SEA-LION v4 27B":
@@ -182,37 +182,42 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         input_prompt = LANGUAGE_PROMPT_NAMES.get(input_lang_name, input_lang_name)
         reply_prompt = LANGUAGE_PROMPT_NAMES.get(reply_lang_name, reply_lang_name)
 
-        # ---- Translation ----
-        system_prompt = "You are a translator. Output ONLY the translation, no explanations or extra text."
-        user_prompt = f"Translate the following {input_prompt} text to {reply_prompt}. Do not add any extra text. Text: {text}"
-        response = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.0
-        )
-        translation = response.choices[0].message.content.strip()
+        # ---- Translation attempts ----
+        attempts = [
+            f"Translate the following {input_prompt} text to {reply_prompt}. Do not add any extra text. Text: {text}",
+            f"Translate this from {input_prompt} to {reply_prompt}: '{text}'",
+            f"Translate '{text}' from {input_prompt} to {reply_prompt}"
+        ]
+        translation = None
+        translation_error = None
 
-        if not translation or translation == text:
-            user_prompt = f"Translate this from {input_prompt} to {reply_prompt}: '{text}'"
+        for prompt in attempts:
             response = client.chat.completions.create(
                 model=model_id,
                 messages=[
-                    {"role": "system", "content": "You are a professional translator. Output ONLY the translated text, no extra words."},
-                    {"role": "user", "content": user_prompt}
+                    {"role": "system", "content": "You are a translator. Output ONLY the translation, no explanations or extra text."},
+                    {"role": "user", "content": prompt}
                 ],
                 temperature=0.0
             )
             translation = response.choices[0].message.content.strip()
+            if translation and translation != text:
+                break
+            elif translation == text:
+                translation_error = "Model returned the same text."
+            else:
+                translation_error = "Empty translation."
 
-        if not translation:
-            return None, None, "Translation was empty."
-        if translation == text:
-            return None, None, "Translation returned the same text. Try a different model or language pair."
+        # If all attempts failed or returned same text, fallback to original text
+        if not translation or translation == text:
+            translation = text
+            translation_error = "Translation failed; using original text."
 
-        # ---- TTS (with fallback) ----
+        # Store translation for debug
+        st.session_state.raw_translation = translation
+        st.session_state.raw_prompt = attempts[0]
+
+        # ---- TTS ----
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
         voice_map = {
             "en": "en-US-JennyNeural",
@@ -238,9 +243,10 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         output_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
         output_file.close()
 
-        # Attempt primary voice
         tts_success = False
         tts_error = None
+
+        # Try primary voice
         try:
             async def tts_task():
                 communicate = edge_tts.Communicate(translation, voice)
@@ -259,18 +265,18 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
                 asyncio.run(fallback_tts())
                 if os.path.exists(output_file.name) and os.path.getsize(output_file.name) > 0:
                     tts_success = True
-                    tts_error = f"Primary voice failed ({e}), fallback voice used."
+                    tts_error = f"Primary voice failed ({e}), fallback used."
             except Exception as e2:
                 tts_error = f"Primary: {e}, Fallback: {e2}"
 
         if tts_success:
             return translation, output_file.name, None
         else:
-            # TTS failed – return translation without audio
             return translation, None, f"TTS failed: {tts_error}"
 
     except Exception as e:
-        return None, None, f"API Error: {str(e)}"
+        # On any API error, return the original text as fallback
+        return text, None, f"API Error: {str(e)}"
 
 # ============================================================
 # 🖥️ STREAMLIT UI
