@@ -214,7 +214,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
 # ============================================================
 # 🖥️ STREAMLIT UI
 # ============================================================
-st.title("🎙️ R2 Real‑Time Conversation Translator")
+st.title("🎙️ R1.2 Real‑Time Conversation Translator - well suited for audio batch transcript")
 st.markdown("Select languages, record or upload audio, then translate and hear the reply.")
 
 # Sidebar – settings
