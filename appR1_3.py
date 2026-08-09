@@ -281,8 +281,9 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
 # ============================================================
 # 🖥️ STREAMLIT UI
 # ============================================================
-st.title("🎙️ R1.3 Real‑Time Conversation Translator")
+st.title("🎙️ R1.3 Real‑Time Conversation Translator_Advanced")
 st.markdown("**Auto‑detect source language** and **two‑way conversation** support.")
+st.markdown("**Best for Professional use and Advanced** | **SPEED: ⭐⭐⭐ , Accuracy: ⭐⭐⭐⭐⭐ , User Experience: ⭐⭐⭐⭐⭐** ")
 
 # Sidebar – settings
 with st.sidebar:
