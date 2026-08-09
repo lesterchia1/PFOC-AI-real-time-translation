@@ -66,7 +66,7 @@ LANGUAGE_PROMPT_NAMES = {
     "Malaysian Malay": "Malay (ms)",
     "Indonesian Malay": "Indonesian (id)",
     "English": "English",
-    "Chinese": "Simplified Chinese",
+    "Simplified Chinese": "Simplified Chinese",
     "Thai": "Thai",
     "Korean": "Korean",
     "Japanese": "Japanese",
