@@ -61,12 +61,12 @@ LANGUAGE_CODES = {
     "Arabic": "ar", "Myanmar": "my", "Vietnamese": "vi",
     "Khmer": "km"
 }
-# Map display names to more LLM‑friendly labels
+# More explicit names for translation prompts
 LANGUAGE_PROMPT_NAMES = {
     "Malaysian Malay": "Malay (ms)",
     "Indonesian Malay": "Indonesian (id)",
     "English": "English",
-    "Chinese": "Chinese",
+    "Chinese": "Simplified Chinese",
     "Thai": "Thai",
     "Korean": "Korean",
     "Japanese": "Japanese",
@@ -165,7 +165,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
         return None, None
 
 # ============================================================
-# 🗣️ TRANSLATION + TTS (with detailed error reporting)
+# 🗣️ TRANSLATION + TTS (improved with fallback and debugging)
 # ============================================================
 def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
     if not text:
@@ -180,12 +180,13 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         else:
             client = groq_client
 
-        # Use more LLM‑friendly language names
+        # Use more explicit language names
         input_prompt = LANGUAGE_PROMPT_NAMES.get(input_lang_name, input_lang_name)
         reply_prompt = LANGUAGE_PROMPT_NAMES.get(reply_lang_name, reply_lang_name)
 
+        # First attempt
         system_prompt = "You are a translator. Output ONLY the translation, no explanations or extra text."
-        user_prompt = f"Translate from {input_prompt} to {reply_prompt}: {text}"
+        user_prompt = f"Translate the following {input_prompt} text to {reply_prompt}. Do not add any extra text. Text: {text}"
         response = client.chat.completions.create(
             model=model_id,
             messages=[
@@ -196,8 +197,27 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         )
         translation = response.choices[0].message.content.strip()
 
+        # Fallback if translation is empty or same as input
+        if not translation or translation == text:
+            user_prompt = f"Translate this from {input_prompt} to {reply_prompt}: '{text}'"
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": "You are a professional translator. Output ONLY the translated text, no extra words."},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.0
+            )
+            translation = response.choices[0].message.content.strip()
+
+        # Store for debugging
+        st.session_state.raw_translation = translation
+        st.session_state.raw_prompt = user_prompt
+
         if not translation:
             return None, "Translation was empty."
+        if translation == text:
+            return None, "Translation returned the same text. Try a different model or language pair."
 
         # TTS
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
@@ -239,7 +259,7 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
 # ============================================================
 # 🖥️ STREAMLIT UI
 # ============================================================
-st.title("🎙️ R1.3 Real‑Time Conversation Translator")
+st.title("🎙️ R1.4 Real‑Time Conversation Translator")
 st.markdown("**Auto‑detect source language** and **two‑way conversation** support.")
 
 # Sidebar – settings
@@ -264,6 +284,8 @@ with st.sidebar:
         st.session_state["transcription_edit"] = ""
         st.session_state.swap_flag = False
         st.session_state.last_error = ""
+        st.session_state.raw_translation = ""
+        st.session_state.raw_prompt = ""
         st.rerun()
 
 # Session state
@@ -281,6 +303,10 @@ if "last_reply" not in st.session_state:
     st.session_state.last_reply = None
 if "last_error" not in st.session_state:
     st.session_state.last_error = ""
+if "raw_translation" not in st.session_state:
+    st.session_state.raw_translation = ""
+if "raw_prompt" not in st.session_state:
+    st.session_state.raw_prompt = ""
 
 col_left, col_right = st.columns([1, 1])
 
@@ -416,10 +442,13 @@ with col_left:
                     st.error(f"Translation failed: {error_msg}")
 
     # Show debug info if enabled
-    if show_debug and st.session_state.last_error:
-        st.warning(f"Debug: Last error = {st.session_state.last_error}")
-    if show_debug and st.session_state.reply_text:
-        st.info(f"Debug: Translation = {st.session_state.reply_text}")
+    if show_debug:
+        if st.session_state.last_error:
+            st.warning(f"Error: {st.session_state.last_error}")
+        if st.session_state.raw_prompt:
+            st.text_area("Last Prompt", st.session_state.raw_prompt, height=80)
+        if st.session_state.raw_translation:
+            st.text_area("Raw Translation", st.session_state.raw_translation, height=80)
 
 # ---- Right column ----
 with col_right:
