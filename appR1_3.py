@@ -6,15 +6,15 @@ import gc
 import asyncio
 import numpy as np
 import io
-import wave
 from faster_whisper import WhisperModel
 import edge_tts
 from groq import Groq
 from openai import OpenAI
 
-# Additional imports for audio pre-processing / noise reduction
+# Pre-processing dependencies
 import scipy.io.wavfile as wavfile
 import noisereduce as nr
+from pydub import AudioSegment, effects
 
 # ============================================================
 # PAGE CONFIG
@@ -105,8 +105,8 @@ def load_whisper_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
     st.write(f"🚀 Running Whisper on: {device} with {compute_type}")
-    # Using 'small' or 'medium' for better noise handling
-    return WhisperModel("small", device=device, compute_type=compute_type)
+    # Upgraded from 'small' to 'medium' for higher tolerance to background chatter
+    return WhisperModel("medium", device=device, compute_type=compute_type)
 
 whisper_model = load_whisper_model()
 
@@ -126,33 +126,48 @@ def cleanup_memory():
         torch.cuda.empty_cache()
 
 # ============================================================
-# 🔊 AUDIO PRE-PROCESSING (NOISE REDUCTION)
+# 🔊 AUDIO PRE-PROCESSING (ROBUST DECODING & NORMALIZATION)
 # ============================================================
 def preprocess_audio(audio_bytes):
     """
-    Applies spectral gating noise reduction to combat background bus & ambient noise.
+    Decodes arbitrary audio format (WebM/MP3/OGG) to uncompressed PCM WAV,
+    normalizes volume levels, and applies gentle noise reduction.
     """
     try:
-        rate, data = wavfile.read(io.BytesIO(audio_bytes))
+        # Load audio stream through pydub to handle compressed formats safely
+        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
         
-        # Convert stereo to mono if applicable
-        if len(data.shape) > 1:
-            data = data.mean(axis=1)
-            
-        # Perform stationary noise reduction
+        # Standardize audio properties (Mono, 16kHz sample rate)
+        audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+        
+        # Peak normalization to ensure clear audio signal
+        audio_segment = effects.normalize(audio_segment)
+        
+        # Convert audio segment to numpy array for noisereduce
+        samples = np.array(audio_segment.get_array_of_samples())
+        rate = audio_segment.frame_rate
+
+        # Moderate noise reduction (prop_decrease = 0.55 prevents destroying vocal frequencies)
         reduced_noise_data = nr.reduce_noise(
-            y=data, 
+            y=samples, 
             sr=rate, 
-            prop_decrease=0.75, # Balanced noise suppression without destroying speech clarity
+            prop_decrease=0.55,
             stationary=True
         )
         
-        # Save back to WAV bytes
+        # Export processed array to WAV bytes
+        processed_segment = AudioSegment(
+            reduced_noise_data.astype(np.int16).tobytes(),
+            frame_rate=rate,
+            sample_width=2,
+            channels=1
+        )
+        
         out_buffer = io.BytesIO()
-        wavfile.write(out_buffer, rate, reduced_noise_data.astype(np.int16))
+        processed_segment.export(out_buffer, format="wav")
         return out_buffer.getvalue()
     except Exception as e:
-        # Fall back to original audio if processing fails
+        # If conversion fails, return original bytes as fallback
         return audio_bytes
 
 # ============================================================
@@ -162,7 +177,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
     if audio_bytes is None:
         return None, None
     try:
-        # Pre-process audio for noise cancellation
+        # Pre-process audio (conversion, normalization, noise gating)
         cleaned_audio_bytes = preprocess_audio(audio_bytes)
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
@@ -171,34 +186,31 @@ def transcribe_audio(audio_bytes, input_lang_name):
 
         lang_code = None if input_lang_name == "Auto" else LANGUAGE_CODES.get(input_lang_name, "en")
 
-        # Configured Voice Activity Detection parameters specifically for low SNR / noisy environments
+        # Custom VAD parameters to capture target speech amidst ambient noise
         custom_vad_params = dict(
-            threshold=0.35,                  # Lower threshold to detect faint speech over engine noise
-            min_speech_duration_ms=250,      # Prevent dropping short spoken words
+            threshold=0.30,                  # Lower threshold to detect lower-volume human voices
+            min_speech_duration_ms=200,      # Capture brief words
             max_speech_duration_s=float("inf"),
-            min_silence_duration_ms=500,     # Prevent splitting phrases due to intermittent bus noise
-            speech_pad_ms=400                # Add padding around speech intervals
+            min_silence_duration_ms=400,
+            speech_pad_ms=300
         )
-
-        # Initial prompt primes Whisper to filter out background chatter and focus on speech
-        initial_prompt = "Clear spoken conversation transcription. Ignore ambient bus noise, vehicle hum, or background chatter."
 
         segments, info = whisper_model.transcribe(
             tmp_path,
-            beam_size=5,                            # Increased beam size for higher accuracy in noisy audio
+            beam_size=5,
+            best_of=5,
             vad_filter=True,
             vad_parameters=custom_vad_params,
             language=lang_code,
             task="transcribe",
-            initial_prompt=initial_prompt,
-            condition_on_previous_text=False,       # Prevents repeating/hallucinating loops caused by noise
-            no_speech_threshold=0.6,                # Adjust sensitivity to pure noise
+            condition_on_previous_text=False, # Avoids repeating background phrases
+            no_speech_threshold=0.5,
             compression_ratio_threshold=2.4
         )
         
         text = " ".join(seg.text for seg in segments).strip()
 
-        # Fallback run without VAD if VAD missed speech entirely
+        # Fallback decode if VAD filtered out speech completely
         if not text:
             segments, info = whisper_model.transcribe(
                 tmp_path,
@@ -206,7 +218,6 @@ def transcribe_audio(audio_bytes, input_lang_name):
                 vad_filter=False,
                 language=lang_code,
                 task="transcribe",
-                initial_prompt=initial_prompt,
                 condition_on_previous_text=False
             )
             text = " ".join(seg.text for seg in segments).strip()
