@@ -5,10 +5,16 @@ import torch
 import gc
 import asyncio
 import numpy as np
+import io
+import wave
 from faster_whisper import WhisperModel
 import edge_tts
 from groq import Groq
 from openai import OpenAI
+
+# Additional imports for audio pre-processing / noise reduction
+import scipy.io.wavfile as wavfile
+import noisereduce as nr
 
 # ============================================================
 # PAGE CONFIG
@@ -99,6 +105,7 @@ def load_whisper_model():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "int8"
     st.write(f"🚀 Running Whisper on: {device} with {compute_type}")
+    # Using 'small' or 'medium' for better noise handling
     return WhisperModel("small", device=device, compute_type=compute_type)
 
 whisper_model = load_whisper_model()
@@ -119,33 +126,88 @@ def cleanup_memory():
         torch.cuda.empty_cache()
 
 # ============================================================
-# 🗣️ TRANSCRIPTION – with auto‑detect
+# 🔊 AUDIO PRE-PROCESSING (NOISE REDUCTION)
+# ============================================================
+def preprocess_audio(audio_bytes):
+    """
+    Applies spectral gating noise reduction to combat background bus & ambient noise.
+    """
+    try:
+        rate, data = wavfile.read(io.BytesIO(audio_bytes))
+        
+        # Convert stereo to mono if applicable
+        if len(data.shape) > 1:
+            data = data.mean(axis=1)
+            
+        # Perform stationary noise reduction
+        reduced_noise_data = nr.reduce_noise(
+            y=data, 
+            sr=rate, 
+            prop_decrease=0.75, # Balanced noise suppression without destroying speech clarity
+            stationary=True
+        )
+        
+        # Save back to WAV bytes
+        out_buffer = io.BytesIO()
+        wavfile.write(out_buffer, rate, reduced_noise_data.astype(np.int16))
+        return out_buffer.getvalue()
+    except Exception as e:
+        # Fall back to original audio if processing fails
+        return audio_bytes
+
+# ============================================================
+# 🗣️ TRANSCRIPTION – Robust Noisy Environment Configuration
 # ============================================================
 def transcribe_audio(audio_bytes, input_lang_name):
     if audio_bytes is None:
         return None, None
     try:
+        # Pre-process audio for noise cancellation
+        cleaned_audio_bytes = preprocess_audio(audio_bytes)
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp.write(audio_bytes)
+            tmp.write(cleaned_audio_bytes)
             tmp_path = tmp.name
 
         lang_code = None if input_lang_name == "Auto" else LANGUAGE_CODES.get(input_lang_name, "en")
 
+        # Configured Voice Activity Detection parameters specifically for low SNR / noisy environments
+        custom_vad_params = dict(
+            threshold=0.35,                  # Lower threshold to detect faint speech over engine noise
+            min_speech_duration_ms=250,      # Prevent dropping short spoken words
+            max_speech_duration_s=float("inf"),
+            min_silence_duration_ms=500,     # Prevent splitting phrases due to intermittent bus noise
+            speech_pad_ms=400                # Add padding around speech intervals
+        )
+
+        # Initial prompt primes Whisper to filter out background chatter and focus on speech
+        initial_prompt = "Clear spoken conversation transcription. Ignore ambient bus noise, vehicle hum, or background chatter."
+
         segments, info = whisper_model.transcribe(
             tmp_path,
-            beam_size=1,
+            beam_size=5,                            # Increased beam size for higher accuracy in noisy audio
             vad_filter=True,
+            vad_parameters=custom_vad_params,
             language=lang_code,
-            task="transcribe"
+            task="transcribe",
+            initial_prompt=initial_prompt,
+            condition_on_previous_text=False,       # Prevents repeating/hallucinating loops caused by noise
+            no_speech_threshold=0.6,                # Adjust sensitivity to pure noise
+            compression_ratio_threshold=2.4
         )
+        
         text = " ".join(seg.text for seg in segments).strip()
+
+        # Fallback run without VAD if VAD missed speech entirely
         if not text:
             segments, info = whisper_model.transcribe(
                 tmp_path,
-                beam_size=1,
+                beam_size=5,
                 vad_filter=False,
                 language=lang_code,
-                task="transcribe"
+                task="transcribe",
+                initial_prompt=initial_prompt,
+                condition_on_previous_text=False
             )
             text = " ".join(seg.text for seg in segments).strip()
 
@@ -182,7 +244,6 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         input_prompt = LANGUAGE_PROMPT_NAMES.get(input_lang_name, input_lang_name)
         reply_prompt = LANGUAGE_PROMPT_NAMES.get(reply_lang_name, reply_lang_name)
 
-        # ---- Translation attempts ----
         attempts = [
             f"Translate the following {input_prompt} text to {reply_prompt}. Do not add any extra text. Text: {text}",
             f"Translate this from {input_prompt} to {reply_prompt}: '{text}'",
@@ -208,16 +269,13 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
             else:
                 translation_error = "Empty translation."
 
-        # If all attempts failed or returned same text, fallback to original text
         if not translation or translation == text:
             translation = text
             translation_error = "Translation failed; using original text."
 
-        # Store translation for debug
         st.session_state.raw_translation = translation
         st.session_state.raw_prompt = attempts[0]
 
-        # ---- TTS ----
         reply_lang_code = LANGUAGE_CODES.get(reply_lang_name, "en")
         voice_map = {
             "en": "en-US-JennyNeural",
@@ -246,7 +304,6 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
         tts_success = False
         tts_error = None
 
-        # Try primary voice
         try:
             async def tts_task():
                 communicate = edge_tts.Communicate(translation, voice)
@@ -256,7 +313,6 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
                 tts_success = True
         except Exception as e:
             tts_error = str(e)
-            # Fallback to English voice
             try:
                 fallback_voice = "en-US-JennyNeural"
                 async def fallback_tts():
@@ -275,7 +331,6 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
             return translation, None, f"TTS failed: {tts_error}"
 
     except Exception as e:
-        # On any API error, return the original text as fallback
         return text, None, f"API Error: {str(e)}"
 
 # ============================================================
@@ -285,7 +340,6 @@ st.title("🎙️ R1.3 Real‑Time Conversation Translator_Advanced")
 st.markdown("**Auto‑detect source language** and **two‑way conversation** support.")
 st.markdown("**Best for Professional use and Advanced** | **SPEED: ⭐⭐⭐ , Accuracy: ⭐⭐⭐⭐⭐ , User Experience: ⭐⭐⭐⭐⭐** ")
 
-# Sidebar – settings
 with st.sidebar:
     st.header("🌍 Settings")
     input_lang = st.selectbox("Input Language (or Auto)", SUPPORTED_LANGUAGES, index=0)
@@ -312,7 +366,6 @@ with st.sidebar:
         st.session_state.last_tts_error = ""
         st.rerun()
 
-# Session state
 if "history" not in st.session_state:
     st.session_state.history = []
 if "reply_text" not in st.session_state:
@@ -336,14 +389,12 @@ if "last_tts_error" not in st.session_state:
 
 col_left, col_right = st.columns([1, 1])
 
-# ---- Left column ----
 with col_left:
     st.subheader("🎤 Speak or Upload Audio")
 
     audio_data = st.audio_input("Record from microphone")
     uploaded_file = st.file_uploader("Or upload an audio file", type=["wav", "mp3", "m4a", "flac", "ogg"])
 
-    # ----- MAIN BUTTON: Transcribe & Translate -----
     if st.button("🚀 Transcribe & Translate", use_container_width=True):
         audio_bytes = None
         if audio_data is not None:
@@ -353,7 +404,6 @@ with col_left:
 
         if audio_bytes:
             with st.spinner("Processing..."):
-                # Determine current languages (with swap logic)
                 if two_way and st.session_state.swap_flag:
                     if st.session_state.last_input and st.session_state.last_reply:
                         current_input, current_reply = st.session_state.last_reply, st.session_state.last_input
@@ -362,12 +412,10 @@ with col_left:
                 else:
                     current_input, current_reply = input_lang, reply_lang
 
-                # Transcribe (auto‑detect if needed)
                 text, detected_lang = transcribe_audio(audio_bytes, current_input)
                 if not text:
                     st.error("No speech detected. Please try again.")
                 else:
-                    # Determine source language display
                     if current_input == "Auto" and detected_lang:
                         for name, code in LANGUAGE_CODES.items():
                             if code == detected_lang:
@@ -378,7 +426,6 @@ with col_left:
                     else:
                         source_display = current_input
 
-                    # Translate & TTS
                     translation, audio_file, tts_err = translate_and_speak(
                         text,
                         source_display,
@@ -419,7 +466,6 @@ with col_left:
         else:
             st.warning("No audio to process. Record or upload first.")
 
-    # Editable transcription
     st.subheader("📝 Transcription (Edit if needed)")
     transcribed_edit = st.text_area(
         "Transcription",
@@ -428,13 +474,11 @@ with col_left:
         label_visibility="hidden"
     )
 
-    # Manual translation button (for edited text)
     if st.button("🔄 Translate (edit) & Reply", type="primary", use_container_width=True):
         if not transcribed_edit.strip():
             st.warning("Please enter or speak some text.")
         else:
             with st.spinner("Translating..."):
-                # Determine languages (same swap logic)
                 if two_way and st.session_state.swap_flag:
                     if st.session_state.last_input and st.session_state.last_reply:
                         current_input, current_reply = st.session_state.last_reply, st.session_state.last_input
@@ -479,7 +523,6 @@ with col_left:
                     st.session_state.last_error = error_msg
                     st.error(f"Translation failed: {error_msg}")
 
-    # Show debug info if enabled
     if show_debug:
         if st.session_state.last_error:
             st.warning(f"Error: {st.session_state.last_error}")
@@ -490,7 +533,6 @@ with col_left:
         if st.session_state.last_tts_error:
             st.warning(f"TTS Error: {st.session_state.last_tts_error}")
 
-# ---- Right column ----
 with col_right:
     st.subheader("💬 Translation")
     if st.session_state.reply_text:
