@@ -7,4 +7,6 @@ openai
 numpy
 scipy #new
 noisereduce #new
+pydub
+
 
