@@ -67,6 +67,7 @@ LANGUAGE_CODES = {
     "Arabic": "ar", "Myanmar": "my", "Vietnamese": "vi",
     "Khmer": "km"
 }
+
 LANGUAGE_PROMPT_NAMES = {
     "Malaysian Malay": "Malay (ms)",
     "Indonesian Malay": "Indonesian (id)",
@@ -98,6 +99,23 @@ AVAILABLE_MODELS = {
 }
 
 # ============================================================
+# ⚡ ASYNC HELPER FOR STREAMLIT
+# ============================================================
+def run_async(coro):
+    """Executes async coroutines safely within Streamlit threads."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import nest_asyncio
+        nest_asyncio.apply()
+        return loop.run_until_complete(coro)
+    else:
+        return asyncio.run(coro)
+
+# ============================================================
 # 🎙️ FAST-WHISPER (GPU/CPU auto-detect) – cached
 # ============================================================
 @st.cache_resource
@@ -118,14 +136,14 @@ def cleanup_memory():
         if f.endswith(".mp3") or f.endswith(".wav"):
             try:
                 os.remove(os.path.join(temp_dir, f))
-            except:
+            except Exception:
                 pass
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
 # ============================================================
-# 🔊 AUDIO PRE-PROCESSING (FIXED: NO SIGNAL CLIPPING)
+# 🔊 AUDIO PRE-PROCESSING (FIXED SAMPLE BOUNDS)
 # ============================================================
 def preprocess_audio(audio_bytes):
     """
@@ -137,7 +155,8 @@ def preprocess_audio(audio_bytes):
         audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
         audio_segment = effects.normalize(audio_segment)
         
-        samples = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+        # Explicit int16 alignment before float conversion
+        samples = np.array(audio_segment.get_array_of_samples(), dtype=np.int16).astype(np.float32)
         rate = audio_segment.frame_rate
 
         # Moderate noise reduction (0.30 preserves vocal formants)
@@ -161,11 +180,11 @@ def preprocess_audio(audio_bytes):
         out_buffer = io.BytesIO()
         processed_segment.export(out_buffer, format="wav")
         return out_buffer.getvalue()
-    except Exception as e:
+    except Exception:
         return audio_bytes
 
 # ============================================================
-# 🗣️ TRANSCRIPTION (FIXED: OPTIMIZED VAD & FALLBACK DECODE)
+# 🗣️ TRANSCRIPTION (OPTIMIZED VAD & FALLBACK DECODE)
 # ============================================================
 def transcribe_audio(audio_bytes, input_lang_name):
     if audio_bytes is None:
@@ -181,8 +200,8 @@ def transcribe_audio(audio_bytes, input_lang_name):
 
         # Relaxed VAD parameters so soft/accented voice isn't cut off
         custom_vad_params = dict(
-            threshold=0.20,             # Lowered from 0.30 to detect quiet speech
-            min_speech_duration_ms=100, # Lowered from 200ms
+            threshold=0.20,             # Lowered to detect quiet speech
+            min_speech_duration_ms=100,
             max_speech_duration_s=float("inf"),
             min_silence_duration_ms=500,
             speech_pad_ms=400           # Generous speech padding
@@ -217,7 +236,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
 
         try:
             os.remove(tmp_path)
-        except:
+        except Exception:
             pass
 
         detected_lang = None
@@ -230,7 +249,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
         return None, None
 
 # ============================================================
-# 🗣️ TRANSLATION + TTS (with fallback and detailed errors)
+# 🗣️ TRANSLATION + TTS (SAFE ASYNC RUNNER)
 # ============================================================
 def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
     if not text:
@@ -312,7 +331,8 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
             async def tts_task():
                 communicate = edge_tts.Communicate(translation, voice)
                 await communicate.save(output_file.name)
-            asyncio.run(tts_task())
+            
+            run_async(tts_task())
             if os.path.exists(output_file.name) and os.path.getsize(output_file.name) > 0:
                 tts_success = True
         except Exception as e:
@@ -322,7 +342,8 @@ def translate_and_speak(text, input_lang_name, reply_lang_name, model_choice):
                 async def fallback_tts():
                     communicate = edge_tts.Communicate(translation, fallback_voice)
                     await communicate.save(output_file.name)
-                asyncio.run(fallback_tts())
+                
+                run_async(fallback_tts())
                 if os.path.exists(output_file.name) and os.path.getsize(output_file.name) > 0:
                     tts_success = True
                     tts_error = f"Primary voice failed ({e}), fallback used."
