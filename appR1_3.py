@@ -163,8 +163,8 @@ def preprocess_audio(audio_bytes):
         reduced_noise_data = nr.reduce_noise(
             y=samples, 
             sr=rate, 
-            prop_decrease=0.60,
-            stationary=False
+            prop_decrease=0.30,
+            stationary=True
         )
         
         # Clamp bounds to [-32768, 32767] to avoid integer overflow static
@@ -200,24 +200,24 @@ def transcribe_audio(audio_bytes, input_lang_name):
 
         # Relaxed VAD parameters so soft/accented voice isn't cut off
         custom_vad_params = dict(
-            threshold=0.50,             # Lowered to detect quiet speech
-            min_speech_duration_ms=250,
+            threshold=0.20,             # Lowered to detect quiet speech
+            min_speech_duration_ms=100,
             max_speech_duration_s=float("inf"),
-            min_silence_duration_ms=400,
-            speech_pad_ms=200           # Generous speech padding
+            min_silence_duration_ms=500,
+            speech_pad_ms=400           # Generous speech padding
         )
 
         segments, info = whisper_model.transcribe(
             tmp_path,
             beam_size=5,
-            #best_of=5,
+            best_of=5,
             vad_filter=True,
             vad_parameters=custom_vad_params,
-            #language=lang_code,
-            #task="transcribe",
-            #condition_on_previous_text=False,
-            no_speech_threshold=0.4,
-            log_prob_threshold=-1.0,
+            language=lang_code,
+            task="transcribe",
+            condition_on_previous_text=False,
+            no_speech_threshold=0.6,
+            #log_prob_threshold=-1.0,
             compression_ratio_threshold=2.4
         )
         
