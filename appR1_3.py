@@ -210,7 +210,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
         segments, info = whisper_model.transcribe(
             tmp_path,
             beam_size=5,
-            #best_of=5,
+            best_of=5,
             vad_filter=True,
             vad_parameters=custom_vad_params,
             language=lang_code,
