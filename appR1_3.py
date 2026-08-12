@@ -217,7 +217,7 @@ def transcribe_audio(audio_bytes, input_lang_name):
             #task="transcribe",
             #condition_on_previous_text=False,
             no_speech_threshold=0.4,
-            logprob_threshold=-1.0
+            logprob_threshold=-1.0,
             compression_ratio_threshold=2.4
         )
         
