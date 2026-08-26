@@ -373,8 +373,8 @@ with st.sidebar:
     input_lang = st.selectbox("Input Language (or Auto)", SUPPORTED_LANGUAGES, index=0)
     reply_lang = st.selectbox("Reply Language", SUPPORTED_LANGUAGES,
                               index=SUPPORTED_LANGUAGES.index("Malaysian Malay") if "Malaysian Malay" in SUPPORTED_LANGUAGES else 1)
-    model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=3)
-
+    model_choice = st.selectbox("Translation Model", list(AVAILABLE_MODELS.keys()), index=0)
+    
     two_way = st.checkbox("Two‑way Conversation", value=False,
                           help="Automatically swap languages after each reply.")
     if two_way:
