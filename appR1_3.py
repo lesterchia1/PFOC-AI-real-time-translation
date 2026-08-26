@@ -17,9 +17,12 @@ import noisereduce as nr
 from pydub import AudioSegment, effects
 
 # ============================================================
-# PAGE CONFIG
+# PAGE & SERVER CONFIG
 # ============================================================
 st.set_page_config(page_title="Real‑Time Conversation Translator", layout="wide")
+
+# Increase the maximum upload limit to 600 MB
+st.config.set_option("server.maxUploadSize", 600)
 
 # ============================================================
 # 🚀 API KEY CONFIGURATION
