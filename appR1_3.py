@@ -1,5 +1,5 @@
-import warnings
-warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
+#import warnings
+#warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
 
 import streamlit as st
 import os
@@ -25,7 +25,7 @@ from pydub import AudioSegment, effects
 st.set_page_config(page_title="Real‑Time Conversation Translator", layout="wide")
 
 # Increase the maximum upload limit to 600 MB
-st.config.set_option("server.maxUploadSize", 600)
+#st.config.set_option("server.maxUploadSize", 600)
 
 # ============================================================
 # 🚀 API KEY CONFIGURATION
