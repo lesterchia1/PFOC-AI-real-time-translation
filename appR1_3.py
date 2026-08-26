@@ -91,10 +91,9 @@ LANGUAGE_PROMPT_NAMES = {
 
 AVAILABLE_MODELS = {
     "SEA-LION v4 27B": "aisingapore/Gemma-SEA-LION-v4-27B-IT",
-    "Qwen3 32B": "qwen/qwen3-32b",
-    "kimi-k2": "moonshotai/kimi-k2-instruct-0905",
-    "Llama-3.3 70B": "llama-3.3-70b-versatile",
-    "Llama-3.1 instant 8B": "llama-3.1-8b-instant",
+    "Qwen-3.6 27B": "qwen/qwen3.6-27b",
+    "GPT-OSS 20B" : "openai/gpt-oss-20b",
+    #"kimi-k2": "moonshotai/kimi-k2-instruct-0905",
     "Llama-4 guard 12B": "meta-llama/llama-guard-4-12b"
 }
 
