@@ -1,3 +1,6 @@
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
+
 import streamlit as st
 import os
 import tempfile
@@ -10,9 +13,6 @@ from faster_whisper import WhisperModel
 import edge_tts
 from groq import Groq
 from openai import OpenAI
-import warnings
-warnings.filterwarnings("ignore", category=SyntaxWarning, module="pydub")
-
 
 # Pre-processing dependencies
 import scipy.io.wavfile as wavfile
