@@ -10,3 +10,4 @@ scipy
 numpy
 mutagen>=1.47.0
 nest_asyncio
+audioop-lts
