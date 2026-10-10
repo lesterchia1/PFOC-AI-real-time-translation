@@ -1,6 +1,16 @@
 #import warnings
 #warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
 
+import builtins
+
+# Fix mutagen/pydub compatibility with Python 3.10+
+_original_open = builtins.open
+def _patched_open(*args, **kwargs):
+    kwargs.pop('metadata_errors', None)
+    return _original_open(*args, **kwargs)
+
+builtins.open = _patched_open
+
 import streamlit as st
 import os
 import tempfile
@@ -15,7 +25,7 @@ from groq import Groq
 from openai import OpenAI
 
 # Pre-processing dependencies
-import scipy.io.wavfile as wavfile
+#import scipy.io.wavfile as wavfile
 import noisereduce as nr
 from pydub import AudioSegment, effects
 
