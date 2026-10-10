@@ -1,15 +1,20 @@
 #import warnings
 #warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
 
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
+
 import builtins
 
-# Fix mutagen/pydub compatibility with Python 3.10+
+# Global monkey-patch for Python 3.10+ compatibility with mutagen/pydub
 _orig_open = builtins.open
+
 def _patched_open(*args, **kwargs):
-    kwargs.pop('metadata_errors', None)
+    kwargs.pop("metadata_errors", None)
     return _orig_open(*args, **kwargs)
 
 builtins.open = _patched_open
+
 
 import streamlit as st
 import os
