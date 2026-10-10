@@ -1,6 +1,7 @@
 streamlit
 torch
 faster-whisper
+av<19
 edge-tts
 groq
 openai
