@@ -1,8 +1,18 @@
-#import warnings
-#warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
-
+import sys
 import warnings
+
+# Suppress invalid escape sequence syntax warnings in pydub under Python 3.12+
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
+
+# Fix missing audioop module in Python 3.13+ for pydub
+try:
+    import audioop
+except ImportError:
+    try:
+        import audioop_lts as audioop
+        sys.modules["audioop"] = audioop
+    except ImportError:
+        pass
 
 import builtins
 
@@ -14,7 +24,6 @@ def _patched_open(*args, **kwargs):
     return _orig_open(*args, **kwargs)
 
 builtins.open = _patched_open
-
 
 import streamlit as st
 import os
@@ -28,9 +37,6 @@ from faster_whisper import WhisperModel
 import edge_tts
 from groq import Groq
 from openai import OpenAI
-
-# Pre-processing dependencies
-#import scipy.io.wavfile as wavfile
 import noisereduce as nr
 from pydub import AudioSegment, effects
 
