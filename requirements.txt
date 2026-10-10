@@ -4,16 +4,9 @@ faster-whisper
 edge-tts
 groq
 openai
-
 pydub
 noisereduce
 scipy
-
 numpy
-
 mutagen>=1.47.0
 nest_asyncio
-
-#noisereduce #new
-#pydub
-#audioop-lts
