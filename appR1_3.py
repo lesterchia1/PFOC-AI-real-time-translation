@@ -1,34 +1,36 @@
 import sys
-import builtins
-import io
-import pathlib
+import warnings
 
 # ============================================================
-# 🔧 MUST RUN FIRST: Patch open() to strip unsupported kwargs
-# (fixes mutagen/pydub 'metadata_errors' error on Python 3.13+)
+# 🔧 FIX: Patch PyAV's av.open to strip `metadata_errors`
+# (faster-whisper passes this kwarg, but PyAV >= 19 removed it)
+# MUST run before `from faster_whisper import WhisperModel`
 # ============================================================
-_orig_builtin_open = builtins.open
-_orig_io_open = io.open
-_orig_path_open = pathlib.Path.open
+try:
+    import av
+    _orig_av_open = av.open
 
-def _patched_open(*args, **kwargs):
-    kwargs.pop("metadata_errors", None)
-    return _orig_builtin_open(*args, **kwargs)
+    def _patched_av_open(*args, **kwargs):
+        kwargs.pop("metadata_errors", None)
+        return _orig_av_open(*args, **kwargs)
 
-def _patched_io_open(*args, **kwargs):
-    kwargs.pop("metadata_errors", None)
-    return _orig_io_open(*args, **kwargs)
+    av.open = _patched_av_open
 
-def _patched_path_open(self, *args, **kwargs):
-    kwargs.pop("metadata_errors", None)
-    return _orig_path_open(self, *args, **kwargs)
-
-builtins.open = _patched_open
-io.open = _patched_io_open
-pathlib.Path.open = _patched_path_open
+    # Also patch the reference faster-whisper imports directly, if any
+    try:
+        import av.container as _av_container
+        if hasattr(_av_container, "open"):
+            _orig_container_open = _av_container.open
+            def _patched_container_open(*args, **kwargs):
+                kwargs.pop("metadata_errors", None)
+                return _orig_container_open(*args, **kwargs)
+            _av_container.open = _patched_container_open
+    except Exception:
+        pass
+except ImportError:
+    pass  # PyAV not installed — faster-whisper will fail later, unrelated
 
 # Suppress invalid escape sequence syntax warnings in pydub under Python 3.12+
-import warnings
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
 
 # Fix missing audioop module in Python 3.13+ for pydub
@@ -40,6 +42,8 @@ except ImportError:
         sys.modules["audioop"] = audioop
     except ImportError:
         pass
+
+
 
 import streamlit as st
 import os
