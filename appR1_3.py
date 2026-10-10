@@ -4,10 +4,10 @@
 import builtins
 
 # Fix mutagen/pydub compatibility with Python 3.10+
-_original_open = builtins.open
+_orig_open = builtins.open
 def _patched_open(*args, **kwargs):
     kwargs.pop('metadata_errors', None)
-    return _original_open(*args, **kwargs)
+    return _orig_open(*args, **kwargs)
 
 builtins.open = _patched_open
 
