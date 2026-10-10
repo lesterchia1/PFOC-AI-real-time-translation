@@ -10,7 +10,6 @@ noisereduce
 scipy
 
 numpy
-#scipy #new
 
 mutagen>=1.47.0
 nest_asyncio
