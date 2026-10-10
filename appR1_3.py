@@ -1,7 +1,34 @@
 import sys
-import warnings
+import builtins
+import io
+import pathlib
+
+# ============================================================
+# 🔧 MUST RUN FIRST: Patch open() to strip unsupported kwargs
+# (fixes mutagen/pydub 'metadata_errors' error on Python 3.13+)
+# ============================================================
+_orig_builtin_open = builtins.open
+_orig_io_open = io.open
+_orig_path_open = pathlib.Path.open
+
+def _patched_open(*args, **kwargs):
+    kwargs.pop("metadata_errors", None)
+    return _orig_builtin_open(*args, **kwargs)
+
+def _patched_io_open(*args, **kwargs):
+    kwargs.pop("metadata_errors", None)
+    return _orig_io_open(*args, **kwargs)
+
+def _patched_path_open(self, *args, **kwargs):
+    kwargs.pop("metadata_errors", None)
+    return _orig_path_open(self, *args, **kwargs)
+
+builtins.open = _patched_open
+io.open = _patched_io_open
+pathlib.Path.open = _patched_path_open
 
 # Suppress invalid escape sequence syntax warnings in pydub under Python 3.12+
+import warnings
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r".*pydub.*")
 
 # Fix missing audioop module in Python 3.13+ for pydub
@@ -13,17 +40,6 @@ except ImportError:
         sys.modules["audioop"] = audioop
     except ImportError:
         pass
-
-import builtins
-
-# Global monkey-patch for Python 3.10+ compatibility with mutagen/pydub
-_orig_open = builtins.open
-
-def _patched_open(*args, **kwargs):
-    kwargs.pop("metadata_errors", None)
-    return _orig_open(*args, **kwargs)
-
-builtins.open = _patched_open
 
 import streamlit as st
 import os
